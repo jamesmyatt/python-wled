@@ -23,7 +23,7 @@ from .exceptions import (
     WLEDError,
     WLEDUpgradeError,
 )
-from .models import Device, Live, Playlist, Preset
+from .models import DEFAULT_BRAND, DEFAULT_PRODUCT, Device, Live, Playlist, Preset
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -274,7 +274,10 @@ class WLED:
                 self._supports_presets = False
 
             with suppress(WLEDError):
-                versions = await self.get_wled_versions_from_github()
+                versions = await self.get_wled_versions_from_github(
+                    brand=data["info"].get("brand", DEFAULT_BRAND),
+                    product=data["info"].get("product", DEFAULT_PRODUCT),
+                )
                 data["info"].update(versions)
 
             self._device = Device(data)
@@ -321,7 +324,10 @@ class WLED:
                 raise WLEDEmptyResponseError(msg)
 
             with suppress(WLEDError):
-                versions = await self.get_wled_versions_from_github()
+                versions = await self.get_wled_versions_from_github(
+                    brand=info.get("brand", DEFAULT_BRAND),
+                    product=info.get("product", DEFAULT_PRODUCT),
+                )
                 info.update(versions)
 
             self._device.update_from_dict({"info": info, "state": state})
@@ -335,7 +341,10 @@ class WLED:
             raise WLEDEmptyResponseError(msg)
 
         with suppress(WLEDError):
-            versions = await self.get_wled_versions_from_github()
+            versions = await self.get_wled_versions_from_github(
+                brand=state_info["info"].get("brand", DEFAULT_BRAND),
+                product=state_info["info"].get("product", DEFAULT_PRODUCT),
+            )
             state_info["info"].update(versions)
 
         self._device.update_from_dict(state_info)
@@ -665,38 +674,27 @@ class WLED:
             msg = "Unexpected upgrade error; No session or device"
             raise WLEDUpgradeError(msg)
 
-        if self._device.info.architecture not in {
-            "esp01",
-            "esp02",
-            "esp32",
-            "esp8266",
-        }:
-            msg = "Upgrade is only supported on ESP01, ESP02, ESP32 and ESP8266 devices"
-            raise WLEDUpgradeError(msg)
-
         if not self._device.info.version:
             msg = "Current version is unknown, cannot perform upgrade"
+            raise WLEDUpgradeError(msg)
+
+        if self._device.info.brand != "WLED" or self._device.info.product != "FOSS":
+            msg = "Upgrades are only supported for official Aircoookie WLED releases"
+            raise WLEDUpgradeError(msg)
+
+        if not (release_name := self._device.info.release_name):
+            msg = (
+                f"Release name for your {self._device.info.architecture} device "
+                " is unknown"
+            )
             raise WLEDUpgradeError(msg)
 
         if self._device.info.version == version:
             msg = "Device already running the requested version"
             raise WLEDUpgradeError(msg)
 
-        # Determine if this is an Ethernet board
-        ethernet = ""
-        if (
-            self._device.info.architecture == "esp32"
-            and self._device.info.wifi is not None
-            and not self._device.info.wifi.bssid
-            and self._device.info.version
-            and self._device.info.version >= "0.10.0"
-        ):
-            ethernet = "_Ethernet"
-
         url = URL.build(scheme="http", host=self.host, port=80, path="/update")
-        update_file = (
-            f"WLED_{version}_{self._device.info.architecture.upper()}{ethernet}.bin"
-        )
+        update_file = f"{self._device.info.brand}_{version}_{release_name}.bin"
         download_url = (
             "https://github.com/Aircoookie/WLED/releases/download"
             f"/v{version}/{update_file}"
@@ -732,7 +730,9 @@ class WLED:
             raise WLEDConnectionError(msg) from exception
 
     @backoff.on_exception(backoff.expo, WLEDConnectionError, max_tries=3, logger=None)
-    async def get_wled_versions_from_github(self) -> dict[str, str | None]:
+    async def get_wled_versions_from_github(
+        self, *, brand: str = "WLED", product: str = "FOSS"
+    ) -> dict[str, str | None]:
         """Fetch WLED version information from GitHub.
 
         Returns
@@ -749,6 +749,10 @@ class WLED:
                 version information.
 
         """
+        # Only releases from https://github.com/Aircoookie/WLED/releases are supported
+        if brand != "WLED" or product != "FOSS":
+            return {}
+
         with suppress(KeyError):
             return {
                 "version_latest_stable": VERSION_CACHE["stable"],

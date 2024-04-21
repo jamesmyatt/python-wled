@@ -10,6 +10,9 @@ from awesomeversion import AwesomeVersion
 
 from .exceptions import WLEDError
 
+DEFAULT_BRAND = "WLED"
+DEFAULT_PRODUCT = "DIY Light"
+
 
 @dataclass
 class Nightlight:
@@ -363,6 +366,7 @@ class Info:  # pylint: disable=too-many-instance-attributes
     name: str
     pallet_count: int
     product: str
+    release_name: str
     udp_port: int
     uptime: int
     version_id: str
@@ -410,10 +414,13 @@ class Info:  # pylint: disable=too-many-instance-attributes
             elif filesystem.total <= 512:
                 arch = "esp02"
 
+        # Guess the value of WLED_RELEASE_NAME from https://github.com/Aircoookie/WLED/blob/main/platformio.ini
+        release_name = Info.guess_release_name(data, version=version)
+
         return Info(
             architecture=arch,
             arduino_core_version=data.get("core", "Unknown").replace("_", "."),
-            brand=data.get("brand", "WLED"),
+            brand=data.get("brand", DEFAULT_BRAND),
             build_type=data.get("btype", "Unknown"),
             effect_count=data.get("fxcount", 0),
             filesystem=filesystem,
@@ -426,7 +433,8 @@ class Info:  # pylint: disable=too-many-instance-attributes
             mac_address=data.get("mac", ""),
             name=data.get("name", "WLED Light"),
             pallet_count=data.get("palcount", 0),
-            product=data.get("product", "DIY Light"),
+            product=data.get("product", DEFAULT_PRODUCT),
+            release_name=release_name,
             udp_port=data.get("udpport", 0),
             uptime=data.get("uptime", 0),
             version_id=data.get("vid", "Unknown"),
@@ -436,6 +444,61 @@ class Info:  # pylint: disable=too-many-instance-attributes
             websocket=websocket,
             wifi=Wifi.from_dict(data),
         )
+
+    @staticmethod
+    def guess_release_name(
+        data: dict[str, Any],
+        *,
+        version: AwesomeVersion | None = None,
+    ) -> str:
+        """Guess release name from info data.
+
+        This should match the WLED_RELEASE_NAME constant in the WLED source code.
+        See https://github.com/Aircoookie/WLED/blob/main/platformio.ini.
+        """
+        if version is None:
+            version = AwesomeVersion(data.get("ver", "0"))
+
+        arch: str | None = data.get("arch")
+        if not arch or arch not in {
+            "esp32",
+            "esp32-c3",
+            "esp32-s2",
+            "esp32-s3",
+            "esp8266",
+        }:
+            # Upgrade is only supported on the devices listed above
+            return ""
+
+        # Initialise release name
+        release_name = arch.upper()
+
+        # Determine ESP8266 variant
+        #   Note that these variants don't actually support OTA
+        if (
+            arch == "esp8266"
+            and (filesystem := Filesystem.from_dict(data)) is not None
+            and filesystem.total
+        ):
+            if filesystem.total <= 256:
+                release_name = "ESP01"
+            elif filesystem.total <= 512:
+                release_name = "ESP02"
+
+        # Determine if this is an Ethernet board
+        if (
+            arch == "esp32"
+            and not data.get("wifi", {}).get("bssid", "unknown")
+            and version >= "0.10.0"
+        ):
+            release_name += "_Ethernet"
+
+        # Determine flash size on ESP32-S3
+        if arch == "esp32-s3":
+            # Assume it's 8MB since that's the only current release
+            release_name += "_8MB"
+
+        return release_name
 
 
 @dataclass
